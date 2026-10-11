@@ -85,7 +85,7 @@ Proxy names, profile names, YAML keys and content, addresses, paths and original
 | Core | Detect installed Mihomo; bundled/downloaded Core, online updates, backups and rollback |
 | GEO | Bundled initial data; GeoIP, GeoSite, Country MMDB and ASN MMDB updates |
 | Icons | fnOS desktop/window icon choices |
-| Application updates | GitHub Release checks; fnOS Application Center handles FPK upgrades |
+| Application updates | GitHub Release checks, in-app download and verification, App Center installation, progress and failure reporting |
 | Languages | Chinese / English / Follow system, with a persistent browser preference |
 
 ### Configuration editing and rule toggles
@@ -165,7 +165,11 @@ Starting with v1.3.0, `os_min_version=1.1.3100` declares the minimum OS version.
 4. Select the FPK and finish installation.
 5. Open **Clash for fnos** from the desktop.
 
-Use manual installation to upgrade an existing installation.
+Existing installations can be upgraded using manual installation.
+
+Starting with v1.3.16, choose **Settings → Update settings → Update now**. The NAS downloads and verifies the matching FPK, then asks fnOS App Center to install it. Detected release details appear immediately, and the page reloads when the new version is running. This requires `appcenter-cli`, `systemd-run` and `systemctl`; manual download remains available if these tools are unavailable. Older versions need one manual upgrade to a version containing this feature.
+
+An independent system task continues during the app's temporary disconnection. Failures show a reason and offer retry or manual installation. Download or verification failures never invoke the installer. If installation or startup fails, check the application in fnOS App Center.
 
 ### Upgrade notes
 
