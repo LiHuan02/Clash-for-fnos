@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Audit all three FPKs against the locked shared source and fnOS manifest."""
-import gzip, hashlib, json, re, struct, subprocess, tarfile, tempfile
+import gzip, hashlib, json, os, re, struct, subprocess, tarfile, tempfile
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent.parent
 def meta(path):return dict(tuple(x.strip() for x in line.split('=',1)) for line in path.read_text().splitlines() if '=' in line)
@@ -14,6 +14,24 @@ def extract(path,directory):
 version=meta(ROOT/'fpk/manifest')['version']
 assert re.search(r'^## \[([^]]+)\]',(ROOT/'CHANGELOG.md').read_text(),re.M)[1]==version
 lock=json.loads((ROOT/'upstream.lock').read_text())
+update_repository=subprocess.check_output(['python3',str(ROOT/'scripts/read-update-source.py'),str(ROOT/'update-source.json')],text=True).strip()
+execute_binaries=os.environ.get('CLASH_AUDIT_EXECUTE')=='1'
+qemu_x86=os.environ.get('CLASH_AUDIT_QEMU_X86_64')
+qemu_binfmt=os.environ.get('CLASH_AUDIT_QEMU_BINFMT')=='1'
+def probe_binary(binary,arm):
+    # Copy rather than bind-mount: the Docker daemon may run on another host/VM.
+    container=subprocess.check_output([
+        'docker','create','--network','none','--cap-drop','ALL',
+        '--security-opt','no-new-privileges','--platform','linux/'+('arm64' if arm or qemu_x86 else 'amd64'),
+        '--entrypoint','/audit-qemu' if qemu_x86 and not arm else '/audit-binary',
+        'debian:12-slim',*(['/audit-binary']*(2 if qemu_binfmt else 1) if qemu_x86 and not arm else []),'--build-info'],text=True,timeout=30).strip()
+    try:
+        if qemu_x86 and not arm:
+            subprocess.run(['docker','cp',qemu_x86,container+':/audit-qemu'],check=True,timeout=30)
+        subprocess.run(['docker','cp',str(binary),container+':/audit-binary'],check=True,timeout=30)
+        return json.loads(subprocess.check_output(['docker','start','-a',container],text=True,timeout=30))
+    finally:
+        subprocess.run(['docker','rm','-f',container],stdout=subprocess.DEVNULL,check=False,timeout=30)
 cache=subprocess.check_output([str(ROOT/'scripts/fetch-upstream.sh')],text=True).strip()
 def source(path):return subprocess.check_output(['git','--git-dir='+cache,'show',lock['commit']+':'+path])
 assert source('VERSION').decode().strip()==lock['version']
@@ -35,6 +53,7 @@ for architecture,platform,arches in [('x86_64','x86',['x86_64']),('arm64','arm',
             assert (app/'geodata'/geo).read_bytes()==source('assets/geodata/'+geo)
         info=json.loads((app/'build-info.json').read_text())
         assert info['upstream']==lock and info['packageVersion']==version
+        assert info['updateRepository']==update_repository
         public=app/'server/public'
         assert info['frontend']=={str(p.relative_to(public)):sha(p) for p in public.rglob('*') if p.is_file()}
         index=(public/'index.html').read_text()
@@ -55,6 +74,11 @@ for architecture,platform,arches in [('x86_64','x86',['x86_64']),('arm64','arm',
             build=subprocess.check_output(['go','version','-m',str(binary)],text=True)
             assert 'Clash-Manager/backend' in build and 'GOOS=linux' in build and 'CGO_ENABLED=0' in build
             assert 'GOARCH='+('arm64' if arm else 'amd64') in build and binary.stat().st_mode & 0o111
+            # Go omits linker flags from build info when -trimpath is enabled.
+            assert update_repository.encode() in binary.read_bytes()
+            if execute_binaries:
+                runtime_info=probe_binary(binary,arm)
+                assert runtime_info==dict(appName='clash-for-fnos',version=version,updateRepository=update_repository,goos='linux',goarch='arm64' if arm else 'amd64')
         assert not any(p.name in ['node','node_modules','package.json','package-lock.json','server.js','privileged-helper.js'] for p in (app/'server').rglob('*'))
         assets=list((app/'core').glob('mihomo-linux-*.gz'))
         if architecture=='all':assert not assets and (app/'core/online-core.json').exists()
@@ -65,7 +89,8 @@ for architecture,platform,arches in [('x86_64','x86',['x86_64']),('arm64','arm',
             assert sha(assets[0])==metadata['sha256'] and assets[0].stat().st_size==metadata['size']
             with gzip.open(assets[0],'rb') as gz:header=gz.read(64)
             assert header[:4]==b'\x7fELF' and struct.unpack_from('<H',header,18)[0]==(183 if platform=='arm' else 62)
-        records.append(dict(package=package.name,version=version,platform=platform,sharedVersion=lock['version'],sharedCommit=lock['commit'],sha256=sha(package),result='passed'))
+        execution='native-container+qemu-user' if architecture=='all' and qemu_x86 else 'qemu-user' if architecture=='x86_64' and qemu_x86 else 'native-container'
+        records.append(dict(package=package.name,version=version,platform=platform,sharedVersion=lock['version'],sharedCommit=lock['commit'],updateRepository=update_repository,binarySourceCheck='executed' if execute_binaries else 'embedded',binaryExecution=execution if execute_binaries else None,sha256=sha(package),result='passed'))
 report=ROOT/'dist'/f'Clash for fnos_{version}_build-audit.json'
 report.write_text(json.dumps(records,indent=2)+'\n')
 print(json.dumps(records,indent=2))

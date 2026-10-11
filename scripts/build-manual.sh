@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT/fpk"
 OUT="$ROOT/dist"
 TARGET="${1:-}"
+UPDATE_REPO="$(python3 "$ROOT/scripts/read-update-source.py" "$ROOT/update-source.json")"
 
 usage() {
   echo "Usage: $0 <x86|arm|all>" >&2
@@ -73,13 +74,13 @@ mkdir -p "$STAGE/app/geodata" "$STAGE/app/licenses" "$STAGE/app/core"
 cp -a "$SHARED/assets/geodata/." "$STAGE/app/geodata/"
 cp -a "$SHARED/assets/licenses/." "$STAGE/app/licenses/"
 cp "$SHARED/assets/licenses/Mihomo-LICENSE-GPL-3.txt" "$STAGE/app/core/"
-python3 - "$ROOT/upstream.lock" "$STAGE/app/build-info.json" "$WEB/dist" "$STAGE/manifest" <<'PYTHON'
+python3 - "$ROOT/upstream.lock" "$STAGE/app/build-info.json" "$WEB/dist" "$STAGE/manifest" "$UPDATE_REPO" <<'PYTHON'
 import hashlib, json, sys
 from pathlib import Path
 info=json.loads(Path(sys.argv[1]).read_text())
 public=Path(sys.argv[3])
 version=next(line.split('=',1)[1].strip() for line in Path(sys.argv[4]).read_text().splitlines() if line.startswith('version'))
-info=dict(upstream=info, packageVersion=version, frontend={str(p.relative_to(public)):hashlib.sha256(p.read_bytes()).hexdigest() for p in public.rglob('*') if p.is_file()})
+info=dict(upstream=info, packageVersion=version, updateRepository=sys.argv[5], frontend={str(p.relative_to(public)):hashlib.sha256(p.read_bytes()).hexdigest() for p in public.rglob('*') if p.is_file()})
 Path(sys.argv[2]).write_text(json.dumps(info, indent=2)+'\n')
 PYTHON
 
@@ -113,11 +114,11 @@ build_go_web() {
   (
     cd "$SHARED/backend"
     CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" "$GO_BIN" build \
-      -trimpath -ldflags "-s -w -X main.version=$VERSION" \
+      -trimpath -ldflags "-s -w -X main.version=$VERSION -X github.com/chenpingonline/Clash-Manager/backend/internal/appupdate.Repository=$UPDATE_REPO" \
       -o "$STAGE/app/server/bin/clash-for-fnos-web-$suffix" \
       ./cmd/clash-for-fnos-web
     CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" "$GO_BIN" build \
-      -trimpath -ldflags "-s -w -X main.version=$VERSION" \
+      -trimpath -ldflags "-s -w -X main.version=$VERSION -X github.com/chenpingonline/Clash-Manager/backend/internal/appupdate.Repository=$UPDATE_REPO" \
       -o "$STAGE/app/server/bin/clash-for-fnos-helper-$suffix" \
       ./cmd/clash-for-fnos-helper
   )
