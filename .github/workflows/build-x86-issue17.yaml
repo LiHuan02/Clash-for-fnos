@@ -1,0 +1,73 @@
+name: fnOS x86 English fix FPK
+
+on:
+  push:
+    branches:
+      - fix/issue-17-english-amd64-fpk
+
+permissions:
+  contents: read
+
+jobs:
+  build-x86:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Build native fnOS x86_64 package
+        run: ./scripts/build-x86.sh
+      - name: Audit x86_64 FPK and English CSS
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import gzip
+          import hashlib
+          import io
+          import re
+          import struct
+          import tarfile
+          from pathlib import Path
+
+          fpk=next(Path('dist').glob('*_x86_64.fpk'))
+          expected=Path(str(fpk)+'.sha256').read_text().split()[0]
+          assert hashlib.sha256(fpk.read_bytes()).hexdigest()==expected
+          with tarfile.open(fpk,'r:gz') as package:
+              manifest=package.extractfile('./manifest').read().decode()
+              assert re.search(r'^platform\\s*=\\s*x86$',manifest,re.M), manifest
+              assert re.search(r'^version\\s*=\\s*1\\.5\\.1$',manifest,re.M), manifest
+              checksum=re.search(r'^checksum\\s*=\\s*([a-f0-9]{32})$',manifest,re.M)[1]
+              appbytes=package.extractfile('./app.tgz').read()
+              assert hashlib.md5(appbytes).hexdigest()==checksum
+          with tarfile.open(fileobj=io.BytesIO(appbytes),mode='r:gz') as app:
+              members=app.getmembers()
+              paths={m.name.lstrip('./'):m for m in members}
+              binaries=[p for p in paths if p.startswith('server/bin/') and paths[p].isfile()]
+              assert sorted(binaries)==['server/bin/clash-for-fnos-helper-x86_64','server/bin/clash-for-fnos-web-x86_64'], binaries
+              for path in binaries:
+                  data=app.extractfile(paths[path]).read(20)
+                  assert data[:6]==b'\\x7fELF\\x02\\x01'
+                  assert struct.unpack_from('<H',data,18)[0]==62
+              core=[p for p in paths if re.search(r'^core/mihomo-linux-amd64-.*\\.gz$',p)]
+              assert len(core)==1, core
+              data=app.extractfile(paths[core[0]]).read()
+              assert gzip.decompress(data)[:4]==b'\\x7fELF'
+              styles='\\n'.join(app.extractfile(paths[p]).read().decode()
+                  for p in paths if re.search(r'^server/public/assets/.*\\.css$',p))
+              assert not re.search(r'html\\[lang\\^?=[^]]+\\]\\s*\\{[^}]*\\bwidth\\s*:',styles)
+              assert re.search(r'proxy-sort-control[^{}]*select[^{}]*\\{[^}]*width:\\s*112px',styles), 'fixed 112px sort control missing'
+          print('PASS:',fpk.name,'size=',fpk.stat().st_size,'sha256=',expected)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clash-for-fnos-1.5.1-x86_64-issue17
+          path: |
+            dist/*_x86_64.fpk
+            dist/*_x86_64.fpk.sha256
+          if-no-files-found: error
+          retention-days: 30
